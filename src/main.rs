@@ -1,6 +1,10 @@
+mod tui;
+
 use crossbeam::channel::{bounded, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use thiserror::Error;
+use tokio::time;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -31,6 +35,7 @@ enum OrderError {
 struct OrderBook {
     asks: Arc<Mutex<Vec<Order>>>,
     bids: Arc<Mutex<Vec<Order>>>,
+    matched: Arc<Mutex<Vec<(Order, Order)>>>,
     order_sender: Sender<Order>,
     order_receiver: Receiver<Order>,
 }
@@ -41,6 +46,7 @@ impl OrderBook {
         OrderBook {
             asks: Arc::new(Mutex::new(Vec::new())),
             bids: Arc::new(Mutex::new(Vec::new())),
+            matched: Arc::new(Mutex::new(Vec::new())),
             order_sender: sender,
             order_receiver: receiver,
         }
@@ -59,9 +65,22 @@ impl OrderBook {
             .map_err(|_| OrderError::ChannelError)
     }
 
+    fn get_asks(&self) -> Vec<Order> {
+        self.asks.lock().expect("Failed to lock asks").clone()
+    }
+
+    fn get_bids(&self) -> Vec<Order> {
+        self.bids.lock().expect("Failed to lock bids").clone()
+    }
+
+    fn get_matched_orders(&self) -> Vec<(Order, Order)> {
+        self.matched.lock().expect("Failed to lock matched").clone()
+    }
+
     fn start_matching_engine(&self) {
         let asks = Arc::clone(&self.asks);
         let bids = Arc::clone(&self.bids);
+        let matched = Arc::clone(&self.matched);
         let receiver = self.order_receiver.clone();
 
         std::thread::spawn(move || {
@@ -70,12 +89,13 @@ impl OrderBook {
                     Side::Buy => {
                         let mut asks_guard = asks.lock().expect("Failed to lock asks");
                         let mut bids_guard = bids.lock().expect("Failed to lock bids");
+                        let mut matched_guard = matched.lock().expect("Failed to lock matched");
 
-                        // Try to match with existing sell orders
                         if let Some(ask_idx) =
                             asks_guard.iter().position(|ask| ask.price <= order.price)
                         {
-                            asks_guard.remove(ask_idx);
+                            let matched_ask = asks_guard.remove(ask_idx);
+                            matched_guard.push((order.clone(), matched_ask));
                         } else {
                             bids_guard.push(order);
                         }
@@ -83,12 +103,13 @@ impl OrderBook {
                     Side::Sell => {
                         let mut asks_guard = asks.lock().expect("Failed to lock asks");
                         let mut bids_guard = bids.lock().expect("Failed to lock bids");
+                        let mut matched_guard = matched.lock().expect("Failed to lock matched");
 
-                        // Try to match with existing buy orders
                         if let Some(bid_idx) =
                             bids_guard.iter().position(|bid| bid.price >= order.price)
                         {
-                            bids_guard.remove(bid_idx);
+                            let matched_bid = bids_guard.remove(bid_idx);
+                            matched_guard.push((matched_bid, order.clone()));
                         } else {
                             asks_guard.push(order);
                         }
@@ -100,35 +121,48 @@ impl OrderBook {
 }
 
 #[tokio::main]
-async fn main() {
-    let orderbook = OrderBook::new();
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let orderbook = Arc::new(OrderBook::new());
     orderbook.start_matching_engine();
 
-    // Example usage
-    let buy_order = Order {
-        id: Uuid::new_v4().to_string(),
-        side: Side::Buy,
-        quantity: 100,
-        price: 1000,
-        decimals: 2,
-    };
+    // Create TUI
+    let mut tui = tui::Tui::new()?;
 
-    let sell_order = Order {
-        id: Uuid::new_v4().to_string(),
-        side: Side::Sell,
-        quantity: 50,
-        price: 990,
-        decimals: 2,
-    };
+    // Spawn order generator thread
+    let orderbook_clone = Arc::clone(&orderbook);
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
 
-    if let Err(e) = orderbook.submit_order(buy_order) {
-        eprintln!("Failed to submit buy order: {}", e);
+            // Generate random order
+            let side = if rand::random() {
+                Side::Buy
+            } else {
+                Side::Sell
+            };
+
+            let price = (rand::random::<i64>() % 1000 + 9000) * 100; // Random price between 90-100
+            let quantity = rand::random::<i64>() % 100 + 1; // Random quantity between 1-100
+
+            let order = Order {
+                id: Uuid::new_v4().to_string(),
+                side,
+                quantity,
+                price,
+                decimals: 2,
+            };
+
+            if let Err(e) = orderbook_clone.submit_order(order) {
+                eprintln!("Failed to submit order: {}", e);
+            }
+        }
+    });
+
+    // Main loop for TUI updates
+    let mut interval = time::interval(Duration::from_millis(100));
+    loop {
+        interval.tick().await;
+        tui.draw(&orderbook)?;
     }
-
-    if let Err(e) = orderbook.submit_order(sell_order) {
-        eprintln!("Failed to submit sell order: {}", e);
-    }
-
-    // Keep the main thread running for a while to process orders
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 }
