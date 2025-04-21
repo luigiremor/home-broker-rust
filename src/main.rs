@@ -1,6 +1,7 @@
 mod tui;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
+use rand::Rng;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
@@ -120,6 +121,28 @@ impl OrderBook {
     }
 }
 
+fn generate_random_order() -> Order {
+    let mut rng = rand::thread_rng();
+
+    // Generate valid price between $90.00 and $110.00 with 2 decimal places
+    let price = rng.gen_range(9000..=11000);
+
+    // Generate valid quantity between 1 and 100
+    let quantity = rng.gen_range(1..=100);
+
+    Order {
+        id: Uuid::new_v4().to_string(),
+        side: if rng.gen_bool(0.5) {
+            Side::Buy
+        } else {
+            Side::Sell
+        },
+        quantity,
+        price,
+        decimals: 2,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orderbook = Arc::new(OrderBook::new());
@@ -134,24 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut interval = time::interval(Duration::from_secs(1));
         loop {
             interval.tick().await;
-
-            // Generate random order
-            let side = if rand::random() {
-                Side::Buy
-            } else {
-                Side::Sell
-            };
-
-            let price = (rand::random::<i64>() % 1000 + 9000) * 100; // Random price between 90-100
-            let quantity = rand::random::<i64>() % 100 + 1; // Random quantity between 1-100
-
-            let order = Order {
-                id: Uuid::new_v4().to_string(),
-                side,
-                quantity,
-                price,
-                decimals: 2,
-            };
+            let order = generate_random_order();
 
             if let Err(e) = orderbook_clone.submit_order(order) {
                 eprintln!("Failed to submit order: {}", e);
