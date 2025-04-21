@@ -5,12 +5,11 @@ use rand::Rng;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
+use tokio::sync::broadcast;
 use tokio::time;
-use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 struct Order {
-    id: String,
     side: Side,
     quantity: i64,
     price: i64,
@@ -39,17 +38,20 @@ struct OrderBook {
     matched: Arc<Mutex<Vec<(Order, Order)>>>,
     order_sender: Sender<Order>,
     order_receiver: Receiver<Order>,
+    shutdown: broadcast::Sender<()>,
 }
 
 impl OrderBook {
     fn new() -> Self {
         let (sender, receiver) = bounded(100);
+        let (shutdown_sender, _) = broadcast::channel(1);
         OrderBook {
             asks: Arc::new(Mutex::new(Vec::new())),
             bids: Arc::new(Mutex::new(Vec::new())),
             matched: Arc::new(Mutex::new(Vec::new())),
             order_sender: sender,
             order_receiver: receiver,
+            shutdown: shutdown_sender,
         }
     }
 
@@ -83,10 +85,15 @@ impl OrderBook {
         let bids = Arc::clone(&self.bids);
         let matched = Arc::clone(&self.matched);
         let receiver = self.order_receiver.clone();
+        let mut shutdown_rx = self.shutdown.subscribe();
 
-        std::thread::spawn(move || {
-            while let Ok(order) = receiver.recv() {
-                match order.side {
+        std::thread::spawn(move || loop {
+            if shutdown_rx.try_recv().is_ok() {
+                break;
+            }
+
+            match receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(order) => match order.side {
                     Side::Buy => {
                         let mut asks_guard = asks.lock().expect("Failed to lock asks");
                         let mut bids_guard = bids.lock().expect("Failed to lock bids");
@@ -115,7 +122,8 @@ impl OrderBook {
                             asks_guard.push(order);
                         }
                     }
-                }
+                },
+                Err(_) => continue,
             }
         });
     }
@@ -123,15 +131,10 @@ impl OrderBook {
 
 fn generate_random_order() -> Order {
     let mut rng = rand::thread_rng();
-
-    // Generate valid price between $90.00 and $110.00 with 2 decimal places
     let price = rng.gen_range(9000..=11000);
-
-    // Generate valid quantity between 1 and 100
     let quantity = rng.gen_range(1..=100);
 
     Order {
-        id: Uuid::new_v4().to_string(),
         side: if rng.gen_bool(0.5) {
             Side::Buy
         } else {
@@ -148,27 +151,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orderbook = Arc::new(OrderBook::new());
     orderbook.start_matching_engine();
 
-    // Create TUI
     let mut tui = tui::Tui::new()?;
 
-    // Spawn order generator thread
     let orderbook_clone = Arc::clone(&orderbook);
-    tokio::spawn(async move {
+    let mut shutdown_rx = orderbook.shutdown.subscribe();
+
+    let order_generator = tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(1));
         loop {
-            interval.tick().await;
-            let order = generate_random_order();
-
-            if let Err(e) = orderbook_clone.submit_order(order) {
-                eprintln!("Failed to submit order: {}", e);
+            tokio::select! {
+                _ = interval.tick() => {
+                    let order = generate_random_order();
+                    if let Err(e) = orderbook_clone.submit_order(order) {
+                        eprintln!("Failed to submit order: {}", e);
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    break;
+                }
             }
         }
     });
 
-    // Main loop for TUI updates
     let mut interval = time::interval(Duration::from_millis(100));
+
     loop {
+        if tui::Tui::should_quit()? {
+            println!("\nShutting down...");
+            break;
+        }
+
         interval.tick().await;
-        tui.draw(&orderbook)?;
+        if let Err(e) = tui.draw(&orderbook) {
+            eprintln!("Failed to draw TUI: {}", e);
+            break;
+        }
     }
+
+    // Cleanup in specific order
+    if let Err(e) = tui.shutdown() {
+        eprintln!("Error during TUI shutdown: {}", e);
+    }
+
+    let _ = orderbook.shutdown.send(());
+    let _ = order_generator.await;
+
+    Ok(())
 }

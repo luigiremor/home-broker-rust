@@ -1,6 +1,6 @@
 use crate::{Order, OrderBook};
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -10,6 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
 use std::io::{self, stdout};
+use std::time::Duration;
 
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
@@ -23,6 +24,27 @@ impl Tui {
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Tui { terminal })
+    }
+
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        disable_raw_mode()?;
+        execute!(
+            self.terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        Ok(())
+    }
+
+    pub fn should_quit() -> io::Result<bool> {
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key) = event::read()? {
+                return Ok(key.code == KeyCode::Char('q')
+                    || key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(event::KeyModifiers::CONTROL));
+            }
+        }
+        Ok(false)
     }
 
     pub fn draw(&mut self, orderbook: &OrderBook) -> io::Result<()> {
@@ -102,7 +124,7 @@ impl Tui {
             .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow)));
         let header = Row::new(header_cells);
 
-        let rows = matches.iter().map(|(buy, sell)| {
+        let rows = matches.iter().map(|(buy, _sell)| {
             let cells = [
                 format!("${:.2}", buy.price as f64 / 10f64.powi(buy.decimals)),
                 buy.quantity.to_string(),
@@ -140,12 +162,11 @@ impl Tui {
 
 impl Drop for Tui {
     fn drop(&mut self) {
-        disable_raw_mode().unwrap();
-        execute!(
+        let _ = disable_raw_mode();
+        let _ = execute!(
             self.terminal.backend_mut(),
             LeaveAlternateScreen,
             DisableMouseCapture
-        )
-        .unwrap();
+        );
     }
 }
