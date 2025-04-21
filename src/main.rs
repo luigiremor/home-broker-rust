@@ -2,8 +2,10 @@ mod tui;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
 use rand::Rng;
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::sync::broadcast;
 use tokio::time;
@@ -14,6 +16,46 @@ struct Order {
     quantity: i64,
     price: i64,
     decimals: i32,
+    timestamp: u64,
+}
+
+impl Order {
+    fn new(side: Side, quantity: i64, price: i64, decimals: i32) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        Self {
+            side,
+            quantity,
+            price,
+            decimals,
+            timestamp,
+        }
+    }
+}
+
+impl PartialEq for Order {
+    fn eq(&self, other: &Self) -> bool {
+        self.price == other.price && self.timestamp == other.timestamp
+    }
+}
+
+impl Eq for Order {}
+
+impl PartialOrd for Order {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Order {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.price
+            .cmp(&other.price)
+            .then_with(|| self.timestamp.cmp(&other.timestamp))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,8 +75,8 @@ enum OrderError {
 }
 
 struct OrderBook {
-    asks: Arc<Mutex<Vec<Order>>>,
-    bids: Arc<Mutex<Vec<Order>>>,
+    asks: Arc<Mutex<BinaryHeap<std::cmp::Reverse<Order>>>>,
+    bids: Arc<Mutex<BinaryHeap<Order>>>,
     matched: Arc<Mutex<Vec<(Order, Order)>>>,
     order_sender: Sender<Order>,
     order_receiver: Receiver<Order>,
@@ -46,8 +88,8 @@ impl OrderBook {
         let (sender, receiver) = bounded(100);
         let (shutdown_sender, _) = broadcast::channel(1);
         OrderBook {
-            asks: Arc::new(Mutex::new(Vec::new())),
-            bids: Arc::new(Mutex::new(Vec::new())),
+            asks: Arc::new(Mutex::new(BinaryHeap::new())),
+            bids: Arc::new(Mutex::new(BinaryHeap::new())),
             matched: Arc::new(Mutex::new(Vec::new())),
             order_sender: sender,
             order_receiver: receiver,
@@ -69,11 +111,17 @@ impl OrderBook {
     }
 
     fn get_asks(&self) -> Vec<Order> {
-        self.asks.lock().expect("Failed to lock asks").clone()
+        self.asks
+            .lock()
+            .map(|heap| heap.iter().map(|ask| ask.0.clone()).collect())
+            .unwrap_or_default()
     }
 
     fn get_bids(&self) -> Vec<Order> {
-        self.bids.lock().expect("Failed to lock bids").clone()
+        self.bids
+            .lock()
+            .map(|heap| heap.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     fn get_matched_orders(&self) -> Vec<(Order, Order)> {
@@ -92,38 +140,47 @@ impl OrderBook {
                 break;
             }
 
-            match receiver.recv_timeout(Duration::from_millis(100)) {
-                Ok(order) => match order.side {
+            if let Ok(order) = receiver.recv_timeout(Duration::from_millis(100)) {
+                match order.side {
                     Side::Buy => {
-                        let mut asks_guard = asks.lock().expect("Failed to lock asks");
-                        let mut bids_guard = bids.lock().expect("Failed to lock bids");
-                        let mut matched_guard = matched.lock().expect("Failed to lock matched");
+                        let can_match = {
+                            let asks_guard = asks.lock().expect("Failed to lock asks");
+                            asks_guard
+                                .peek()
+                                .map(|Reverse(ask)| ask.price <= order.price)
+                                .unwrap_or(false)
+                        };
 
-                        if let Some(ask_idx) =
-                            asks_guard.iter().position(|ask| ask.price <= order.price)
-                        {
-                            let matched_ask = asks_guard.remove(ask_idx);
+                        if can_match {
+                            let mut asks_guard = asks.lock().expect("Failed to lock asks");
+                            let mut matched_guard = matched.lock().expect("Failed to lock matched");
+                            let Reverse(matched_ask) = asks_guard.pop().unwrap();
                             matched_guard.push((order.clone(), matched_ask));
                         } else {
+                            let mut bids_guard = bids.lock().expect("Failed to lock bids");
                             bids_guard.push(order);
                         }
                     }
                     Side::Sell => {
-                        let mut asks_guard = asks.lock().expect("Failed to lock asks");
-                        let mut bids_guard = bids.lock().expect("Failed to lock bids");
-                        let mut matched_guard = matched.lock().expect("Failed to lock matched");
+                        let can_match = {
+                            let bids_guard = bids.lock().expect("Failed to lock bids");
+                            bids_guard
+                                .peek()
+                                .map(|bid| bid.price >= order.price)
+                                .unwrap_or(false)
+                        };
 
-                        if let Some(bid_idx) =
-                            bids_guard.iter().position(|bid| bid.price >= order.price)
-                        {
-                            let matched_bid = bids_guard.remove(bid_idx);
+                        if can_match {
+                            let mut bids_guard = bids.lock().expect("Failed to lock bids");
+                            let mut matched_guard = matched.lock().expect("Failed to lock matched");
+                            let matched_bid = bids_guard.pop().unwrap();
                             matched_guard.push((matched_bid, order.clone()));
                         } else {
-                            asks_guard.push(order);
+                            let mut asks_guard = asks.lock().expect("Failed to lock asks");
+                            asks_guard.push(Reverse(order));
                         }
                     }
-                },
-                Err(_) => continue,
+                }
             }
         });
     }
@@ -134,16 +191,16 @@ fn generate_random_order() -> Order {
     let price = rng.gen_range(9000..=11000);
     let quantity = rng.gen_range(1..=100);
 
-    Order {
-        side: if rng.gen_bool(0.5) {
+    Order::new(
+        if rng.gen_bool(0.5) {
             Side::Buy
         } else {
             Side::Sell
         },
         quantity,
         price,
-        decimals: 2,
-    }
+        2,
+    )
 }
 
 #[tokio::main]
