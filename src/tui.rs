@@ -1,4 +1,4 @@
-use crate::{Order, OrderBook};
+use crate::{Order, OrderBook, Trade};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -58,10 +58,7 @@ impl Tui {
             let size = frame.size();
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3), // Header
-                    Constraint::Min(10),   // Tables
-                ])
+                .constraints([Constraint::Length(3), Constraint::Min(10)])
                 .split(size);
 
             let tables_layout = Layout::default()
@@ -73,23 +70,19 @@ impl Tui {
                 ])
                 .split(chunks[1]);
 
-            // Header with mean price
             let header = Paragraph::new(format!("Mean Price: ${:.2}", mean_price))
                 .style(Style::default().fg(Color::Yellow))
                 .block(Block::default().borders(Borders::ALL));
             frame.render_widget(header, chunks[0]);
 
-            // Buy orders table
             let buy_orders =
                 Self::create_orders_table("Buy Orders", orderbook.get_bids(), Color::Green);
             frame.render_widget(buy_orders, tables_layout[0]);
 
-            // Sell orders table
             let sell_orders =
                 Self::create_orders_table("Sell Orders", orderbook.get_asks(), Color::Red);
             frame.render_widget(sell_orders, tables_layout[1]);
 
-            // Matched orders table
             let matched_orders =
                 Self::create_matched_table("Matched Orders", orderbook.get_matched_orders());
             frame.render_widget(matched_orders, tables_layout[2]);
@@ -106,7 +99,7 @@ impl Tui {
         let rows = orders.iter().map(|order| {
             let cells = [
                 format!("${:.2}", order.price as f64 / 10f64.powi(order.decimals)),
-                order.quantity.to_string(),
+                order.remaining.to_string(),
             ];
             Row::new(cells).style(Style::default().fg(color))
         });
@@ -118,16 +111,16 @@ impl Tui {
             .block(Block::default().title(title).borders(Borders::ALL))
     }
 
-    fn create_matched_table<'a>(title: &'a str, matches: Vec<(Order, Order)>) -> Table<'a> {
+    fn create_matched_table<'a>(title: &'a str, matches: Vec<Trade>) -> Table<'a> {
         let header_cells = ["Price", "Quantity", "Type"]
             .iter()
             .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow)));
         let header = Row::new(header_cells);
 
-        let rows = matches.iter().map(|(buy, _sell)| {
+        let rows = matches.iter().map(|trade| {
             let cells = [
-                format!("${:.2}", buy.price as f64 / 10f64.powi(buy.decimals)),
-                buy.quantity.to_string(),
+                format!("${:.2}", trade.price as f64 / 100.0),
+                trade.quantity.to_string(),
                 "MATCH".to_string(),
             ];
             Row::new(cells).style(Style::default().fg(Color::Blue))

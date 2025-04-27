@@ -13,9 +13,10 @@ use tokio::time;
 #[derive(Debug, Clone)]
 struct Order {
     side: Side,
-    quantity: i64,
     price: i64,
     decimals: i32,
+    original_qty: i64,
+    remaining: i64,
     timestamp: u128,
 }
 
@@ -24,13 +25,14 @@ impl Order {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis())
-            .unwrap_or(0);
+            .expect("Failed to get timestamp");
 
         Self {
             side,
-            quantity,
             price,
             decimals,
+            original_qty: quantity,
+            remaining: quantity,
             timestamp,
         }
     }
@@ -74,10 +76,19 @@ enum OrderError {
     ChannelError,
 }
 
+#[derive(Debug, Clone)]
+struct Trade {
+    price: i64,
+    quantity: i64,
+    buy_order: Order,
+    sell_order: Order,
+    timestamp: u128,
+}
+
 struct OrderBook {
     asks: Arc<Mutex<BinaryHeap<std::cmp::Reverse<Order>>>>,
     bids: Arc<Mutex<BinaryHeap<Order>>>,
-    matched: Arc<Mutex<Vec<(Order, Order)>>>,
+    matched: Arc<Mutex<Vec<Trade>>>,
     order_sender: Sender<Order>,
     order_receiver: Receiver<Order>,
     shutdown: broadcast::Sender<()>,
@@ -98,7 +109,7 @@ impl OrderBook {
     }
 
     fn submit_order(&self, order: Order) -> Result<(), OrderError> {
-        if order.quantity <= 0 {
+        if order.remaining <= 0 {
             return Err(OrderError::InvalidQuantity);
         }
         if order.price <= 0 {
@@ -142,7 +153,7 @@ impl OrderBook {
         bids
     }
 
-    fn get_matched_orders(&self) -> Vec<(Order, Order)> {
+    fn get_matched_orders(&self) -> Vec<Trade> {
         self.matched.lock().expect("Failed to lock matched").clone()
     }
 
@@ -158,44 +169,98 @@ impl OrderBook {
                 break;
             }
 
-            if let Ok(order) = receiver.recv_timeout(Duration::from_millis(100)) {
-                match order.side {
+            if let Ok(mut incoming) = receiver.recv_timeout(Duration::from_millis(100)) {
+                match incoming.side {
                     Side::Buy => {
-                        let can_match = {
-                            let asks_guard = asks.lock().expect("Failed to lock asks");
-                            asks_guard
-                                .peek()
-                                .map(|Reverse(ask)| ask.price <= order.price)
-                                .unwrap_or(false)
-                        };
+                        let mut asks_guard = asks.lock().expect("Failed to lock asks");
+                        let mut matched_guard = matched.lock().expect("Failed to lock matched");
 
-                        if can_match {
-                            let mut asks_guard = asks.lock().expect("Failed to lock asks");
-                            let mut matched_guard = matched.lock().expect("Failed to lock matched");
-                            let Reverse(matched_ask) = asks_guard.pop().unwrap();
-                            matched_guard.push((order.clone(), matched_ask));
-                        } else {
+                        while incoming.remaining > 0 {
+                            match asks_guard.peek() {
+                                Some(Reverse(ask)) if ask.price <= incoming.price => {
+                                    let Reverse(mut best_ask) =
+                                        asks_guard.pop().expect("Ask was just peeked");
+
+                                    let trade_qty = incoming.remaining.min(best_ask.remaining);
+
+                                    // Create trade at ask price (price-time priority)
+                                    let trade = Trade {
+                                        price: best_ask.price,
+                                        quantity: trade_qty,
+                                        buy_order: incoming.clone(),
+                                        sell_order: best_ask.clone(),
+                                        timestamp: SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .map(|d| d.as_millis())
+                                            .expect("Failed to get timestamp"),
+                                    };
+
+                                    // Update quantities
+                                    incoming.remaining -= trade_qty;
+                                    best_ask.remaining -= trade_qty;
+
+                                    // Record the trade
+                                    matched_guard.push(trade);
+
+                                    // If ask still has quantity, push it back
+                                    if best_ask.remaining > 0 {
+                                        asks_guard.push(Reverse(best_ask));
+                                    }
+                                }
+                                _ => break, // No matching asks available
+                            }
+                        }
+
+                        // If incoming order still has remaining quantity, add to bids
+                        if incoming.remaining > 0 {
                             let mut bids_guard = bids.lock().expect("Failed to lock bids");
-                            bids_guard.push(order);
+                            bids_guard.push(incoming);
                         }
                     }
                     Side::Sell => {
-                        let can_match = {
-                            let bids_guard = bids.lock().expect("Failed to lock bids");
-                            bids_guard
-                                .peek()
-                                .map(|bid| bid.price >= order.price)
-                                .unwrap_or(false)
-                        };
+                        let mut bids_guard = bids.lock().expect("Failed to lock bids");
+                        let mut matched_guard = matched.lock().expect("Failed to lock matched");
 
-                        if can_match {
-                            let mut bids_guard = bids.lock().expect("Failed to lock bids");
-                            let mut matched_guard = matched.lock().expect("Failed to lock matched");
-                            let matched_bid = bids_guard.pop().unwrap();
-                            matched_guard.push((matched_bid, order.clone()));
-                        } else {
+                        while incoming.remaining > 0 {
+                            match bids_guard.peek() {
+                                Some(bid) if bid.price >= incoming.price => {
+                                    let mut best_bid =
+                                        bids_guard.pop().expect("Bid was just peeked");
+
+                                    let trade_qty = incoming.remaining.min(best_bid.remaining);
+
+                                    // Create trade at bid price (price-time priority)
+                                    let trade = Trade {
+                                        price: best_bid.price,
+                                        quantity: trade_qty,
+                                        buy_order: best_bid.clone(),
+                                        sell_order: incoming.clone(),
+                                        timestamp: SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .map(|d| d.as_millis())
+                                            .expect("Failed to get timestamp"),
+                                    };
+
+                                    // Update quantities
+                                    incoming.remaining -= trade_qty;
+                                    best_bid.remaining -= trade_qty;
+
+                                    // Record the trade
+                                    matched_guard.push(trade);
+
+                                    // If bid still has quantity, push it back
+                                    if best_bid.remaining > 0 {
+                                        bids_guard.push(best_bid);
+                                    }
+                                }
+                                _ => break, // No matching bids available
+                            }
+                        }
+
+                        // If incoming order still has remaining quantity, add to asks
+                        if incoming.remaining > 0 {
                             let mut asks_guard = asks.lock().expect("Failed to lock asks");
-                            asks_guard.push(Reverse(order));
+                            asks_guard.push(Reverse(incoming));
                         }
                     }
                 }
@@ -289,7 +354,8 @@ mod tests {
         let order = create_order(Side::Buy, 10000, 50);
         assert_eq!(order.side, Side::Buy);
         assert_eq!(order.price, 10000);
-        assert_eq!(order.quantity, 50);
+        assert_eq!(order.original_qty, 50);
+        assert_eq!(order.remaining, 50);
         assert_eq!(order.decimals, 2);
         assert!(order.timestamp > 0);
     }
@@ -343,8 +409,8 @@ mod tests {
 
         let matched = orderbook.get_matched_orders();
         assert_eq!(matched.len(), 1);
-        assert_eq!(matched[0].0.price, buy_order.price);
-        assert_eq!(matched[0].1.price, sell_order.price);
+        assert_eq!(matched[0].buy_order.price, buy_order.price);
+        assert_eq!(matched[0].sell_order.price, sell_order.price);
     }
 
     #[test]
@@ -364,8 +430,8 @@ mod tests {
 
         let matched = orderbook.get_matched_orders();
         assert_eq!(matched.len(), 1);
-        assert_eq!(matched[0].0.price, buy_order.price);
-        assert_eq!(matched[0].1.price, sell_order.price);
+        assert_eq!(matched[0].buy_order.price, buy_order.price);
+        assert_eq!(matched[0].sell_order.price, sell_order.price);
     }
 
     #[test]
@@ -477,5 +543,67 @@ mod tests {
         let bids = orderbook.get_bids();
         assert_eq!(bids.len(), 1);
         assert_eq!(bids[0].price, 10000);
+    }
+
+    #[test]
+    fn test_partial_fill() {
+        let orderbook = Arc::new(OrderBook::new());
+        orderbook.start_matching_engine();
+
+        // Add sell order for 10 units at 100
+        let sell_order = create_order(Side::Sell, 100, 10);
+        orderbook
+            .submit_order(sell_order.clone())
+            .expect("Failed to submit sell order");
+        thread::sleep(Duration::from_millis(100));
+
+        // Add buy order for 15 units at 100
+        let buy_order = create_order(Side::Buy, 100, 15);
+        orderbook
+            .submit_order(buy_order.clone())
+            .expect("Failed to submit buy order");
+        thread::sleep(Duration::from_millis(100));
+
+        let trades = orderbook.get_matched_orders();
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].quantity, 10); // Should match 10 units
+
+        let bids = orderbook.get_bids();
+        assert_eq!(bids.len(), 1);
+        assert_eq!(bids[0].remaining, 5); // Should have 5 units remaining
+    }
+
+    #[test]
+    fn test_multiple_partial_fills() {
+        let orderbook = Arc::new(OrderBook::new());
+        orderbook.start_matching_engine();
+
+        let sell_orders = vec![
+            create_order(Side::Sell, 100, 5), // 5 units at 100
+            create_order(Side::Sell, 101, 3), // 3 units at 101
+            create_order(Side::Sell, 102, 7), // 7 units at 102
+        ];
+
+        for order in sell_orders {
+            orderbook
+                .submit_order(order)
+                .expect("Failed to submit sell order");
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        let buy_order = create_order(Side::Buy, 102, 8);
+        orderbook
+            .submit_order(buy_order)
+            .expect("Failed to submit buy order");
+        thread::sleep(Duration::from_millis(100));
+
+        let trades = orderbook.get_matched_orders();
+        assert_eq!(trades.len(), 2);
+
+        assert_eq!(trades[0].quantity, 5);
+        assert_eq!(trades[0].price, 100);
+
+        assert_eq!(trades[1].quantity, 3);
+        assert_eq!(trades[1].price, 101);
     }
 }
