@@ -1,4 +1,7 @@
-use crate::{Order, OrderBook, Trade};
+use crate::{
+    core::orderbook::OrderBook,
+    models::{Order, Trade},
+};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
