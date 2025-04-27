@@ -16,14 +16,14 @@ struct Order {
     quantity: i64,
     price: i64,
     decimals: i32,
-    timestamp: u64,
+    timestamp: u128,
 }
 
 impl Order {
     fn new(side: Side, quantity: i64, price: i64, decimals: i32) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
+            .map(|d| d.as_millis())
             .unwrap_or(0);
 
         Self {
@@ -54,7 +54,7 @@ impl Ord for Order {
     fn cmp(&self, other: &Self) -> Ordering {
         self.price
             .cmp(&other.price)
-            .then_with(|| self.timestamp.cmp(&other.timestamp))
+            .then_with(|| other.timestamp.cmp(&self.timestamp))
     }
 }
 
@@ -111,17 +111,35 @@ impl OrderBook {
     }
 
     fn get_asks(&self) -> Vec<Order> {
-        self.asks
+        let mut asks = self
+            .asks
             .lock()
-            .map(|heap| heap.iter().map(|ask| ask.0.clone()).collect())
-            .unwrap_or_default()
+            .expect("Failed to lock asks")
+            .iter()
+            .map(|rev| rev.0.clone())
+            .collect::<Vec<_>>();
+        asks.sort_by(|a, b| {
+            a.price
+                .cmp(&b.price)
+                .then_with(|| a.timestamp.cmp(&b.timestamp))
+        });
+        asks
     }
 
     fn get_bids(&self) -> Vec<Order> {
-        self.bids
+        let mut bids = self
+            .bids
             .lock()
-            .map(|heap| heap.iter().cloned().collect())
-            .unwrap_or_default()
+            .expect("Failed to lock bids")
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        bids.sort_by(|a, b| {
+            b.price
+                .cmp(&a.price)
+                .then_with(|| a.timestamp.cmp(&b.timestamp))
+        });
+        bids
     }
 
     fn get_matched_orders(&self) -> Vec<(Order, Order)> {
@@ -254,4 +272,210 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = order_generator.await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    fn create_order(side: Side, price: i64, quantity: i64) -> Order {
+        Order::new(side, quantity, price, 2)
+    }
+
+    #[test]
+    fn test_order_creation() {
+        let order = create_order(Side::Buy, 10000, 50);
+        assert_eq!(order.side, Side::Buy);
+        assert_eq!(order.price, 10000);
+        assert_eq!(order.quantity, 50);
+        assert_eq!(order.decimals, 2);
+        assert!(order.timestamp > 0);
+    }
+
+    #[test]
+    fn test_order_comparison() {
+        let order1 = create_order(Side::Buy, 10000, 50);
+        thread::sleep(Duration::from_millis(1));
+        let order2 = create_order(Side::Buy, 10000, 50);
+
+        // Same price, different timestamp
+        assert!(order1 > order2); // Earlier timestamp should be higher priority
+
+        let order3 = create_order(Side::Buy, 10100, 50);
+        assert!(order3 > order1); // Higher price should be higher priority
+    }
+
+    #[test]
+    fn test_invalid_orders() {
+        let orderbook = OrderBook::new();
+
+        // Test invalid quantity
+        let invalid_qty = create_order(Side::Buy, 10000, 0);
+        assert!(matches!(
+            orderbook.submit_order(invalid_qty),
+            Err(OrderError::InvalidQuantity)
+        ));
+
+        // Test invalid price
+        let invalid_price = create_order(Side::Buy, 0, 50);
+        assert!(matches!(
+            orderbook.submit_order(invalid_price),
+            Err(OrderError::InvalidPrice)
+        ));
+    }
+
+    #[test]
+    fn test_order_matching_buy() {
+        let orderbook = Arc::new(OrderBook::new());
+        orderbook.start_matching_engine();
+
+        // Add sell order first
+        let sell_order = create_order(Side::Sell, 10000, 50);
+        orderbook.submit_order(sell_order.clone()).unwrap();
+        thread::sleep(Duration::from_millis(100));
+
+        // Add matching buy order
+        let buy_order = create_order(Side::Buy, 10000, 50);
+        orderbook.submit_order(buy_order.clone()).unwrap();
+        thread::sleep(Duration::from_millis(100));
+
+        let matched = orderbook.get_matched_orders();
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].0.price, buy_order.price);
+        assert_eq!(matched[0].1.price, sell_order.price);
+    }
+
+    #[test]
+    fn test_order_matching_sell() {
+        let orderbook = Arc::new(OrderBook::new());
+        orderbook.start_matching_engine();
+
+        // Add buy order first
+        let buy_order = create_order(Side::Buy, 10000, 50);
+        orderbook.submit_order(buy_order.clone()).unwrap();
+        thread::sleep(Duration::from_millis(100));
+
+        // Add matching sell order
+        let sell_order = create_order(Side::Sell, 10000, 50);
+        orderbook.submit_order(sell_order.clone()).unwrap();
+        thread::sleep(Duration::from_millis(100));
+
+        let matched = orderbook.get_matched_orders();
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].0.price, buy_order.price);
+        assert_eq!(matched[0].1.price, sell_order.price);
+    }
+
+    #[test]
+    fn test_order_book_sorting() {
+        let orderbook = Arc::new(OrderBook::new());
+        orderbook.start_matching_engine();
+
+        // Add multiple buy orders
+        let buy_orders = vec![
+            create_order(Side::Buy, 10000, 50),
+            create_order(Side::Buy, 10200, 50),
+            create_order(Side::Buy, 10100, 50),
+        ];
+
+        // Add multiple sell orders
+        let sell_orders = vec![
+            create_order(Side::Sell, 10300, 50),
+            create_order(Side::Sell, 10500, 50),
+            create_order(Side::Sell, 10400, 50),
+        ];
+
+        // Submit all orders
+        for order in buy_orders.iter().chain(sell_orders.iter()) {
+            orderbook.submit_order(order.clone()).unwrap();
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        // Check bid sorting (highest to lowest)
+        let bids = orderbook.get_bids();
+        assert!(!bids.is_empty());
+        for i in 0..bids.len() - 1 {
+            assert!(bids[i].price >= bids[i + 1].price);
+        }
+
+        // Check ask sorting (lowest to highest)
+        let asks = orderbook.get_asks();
+        assert!(!asks.is_empty());
+        for i in 0..asks.len() - 1 {
+            assert!(asks[i].price <= asks[i + 1].price);
+        }
+    }
+
+    #[test]
+    fn test_price_time_priority() {
+        let orderbook = Arc::new(OrderBook::new());
+        orderbook.start_matching_engine();
+
+        // Create orders with same price but different timestamps
+        let order1 = create_order(Side::Buy, 10000, 50);
+        thread::sleep(Duration::from_millis(10));
+        let order2 = create_order(Side::Buy, 10000, 50);
+
+        orderbook.submit_order(order2.clone()).unwrap();
+        orderbook.submit_order(order1.clone()).unwrap();
+        thread::sleep(Duration::from_millis(100));
+
+        let bids = orderbook.get_bids();
+        assert_eq!(bids.len(), 2);
+        assert!(
+            bids[0].timestamp < bids[1].timestamp,
+            "First order should have earlier timestamp. First: {}, Second: {}",
+            bids[0].timestamp,
+            bids[1].timestamp
+        );
+    }
+
+    #[test]
+    fn test_no_match_conditions() {
+        let orderbook = Arc::new(OrderBook::new());
+        orderbook.start_matching_engine();
+
+        // Add buy order lower than sell price
+        let buy_order = create_order(Side::Buy, 10000, 50);
+        let sell_order = create_order(Side::Sell, 10100, 50);
+
+        orderbook.submit_order(buy_order).unwrap();
+        orderbook.submit_order(sell_order).unwrap();
+        thread::sleep(Duration::from_millis(100));
+
+        let matched = orderbook.get_matched_orders();
+        assert_eq!(matched.len(), 0);
+
+        let bids = orderbook.get_bids();
+        let asks = orderbook.get_asks();
+        assert_eq!(bids.len(), 1);
+        assert_eq!(asks.len(), 1);
+    }
+
+    #[test]
+    fn test_shutdown() {
+        let orderbook = Arc::new(OrderBook::new());
+        orderbook.start_matching_engine();
+
+        // Submit an order
+        let order = create_order(Side::Buy, 10000, 50);
+        orderbook.submit_order(order).unwrap();
+        thread::sleep(Duration::from_millis(100)); // Wait for order processing
+
+        // Trigger shutdown
+        let _ = orderbook.shutdown.send(());
+        thread::sleep(Duration::from_millis(200));
+
+        // Try to submit another order after shutdown
+        let order2 = create_order(Side::Buy, 10100, 50);
+        orderbook.submit_order(order2).unwrap();
+        thread::sleep(Duration::from_millis(100));
+
+        // Verify only first order is there
+        let bids = orderbook.get_bids();
+        assert_eq!(bids.len(), 1);
+        assert_eq!(bids[0].price, 10000);
+    }
 }
