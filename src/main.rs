@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 use tokio::time;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct Order {
     side: Side,
     price: i64,
@@ -77,6 +78,7 @@ enum OrderError {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct Trade {
     price: i64,
     quantity: i64,

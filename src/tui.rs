@@ -90,7 +90,7 @@ impl Tui {
         Ok(())
     }
 
-    fn create_orders_table<'a>(title: &'a str, orders: Vec<Order>, color: Color) -> Table<'a> {
+    fn create_orders_table(title: &str, orders: Vec<Order>, color: Color) -> Table<'_> {
         let header_cells = ["Price", "Quantity"]
             .iter()
             .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow)));
@@ -111,7 +111,7 @@ impl Tui {
             .block(Block::default().title(title).borders(Borders::ALL))
     }
 
-    fn create_matched_table<'a>(title: &'a str, matches: Vec<Trade>) -> Table<'a> {
+    fn create_matched_table(title: &str, matches: Vec<Trade>) -> Table<'_> {
         let header_cells = ["Price", "Quantity", "Type"]
             .iter()
             .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow)));
