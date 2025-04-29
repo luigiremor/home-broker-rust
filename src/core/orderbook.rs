@@ -1,6 +1,6 @@
 use crossbeam::channel::{bounded, Receiver, Sender};
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
@@ -11,7 +11,7 @@ use crate::models::{Order, Side, Trade};
 pub struct OrderBook {
     asks: Arc<Mutex<BinaryHeap<Reverse<Order>>>>,
     bids: Arc<Mutex<BinaryHeap<Order>>>,
-    matched: Arc<Mutex<Vec<Trade>>>,
+    matched: Arc<Mutex<VecDeque<Trade>>>,
     order_sender: Sender<Order>,
     order_receiver: Receiver<Order>,
     pub shutdown: broadcast::Sender<()>,
@@ -24,7 +24,7 @@ impl OrderBook {
         OrderBook {
             asks: Arc::new(Mutex::new(BinaryHeap::new())),
             bids: Arc::new(Mutex::new(BinaryHeap::new())),
-            matched: Arc::new(Mutex::new(Vec::new())),
+            matched: Arc::new(Mutex::new(VecDeque::new())),
             order_sender: sender,
             order_receiver: receiver,
             shutdown: shutdown_sender,
@@ -77,7 +77,12 @@ impl OrderBook {
     }
 
     pub fn get_matched_orders(&self) -> Vec<Trade> {
-        self.matched.lock().expect("Failed to lock matched").clone()
+        self.matched
+            .lock()
+            .expect("Failed to lock matched")
+            .clone()
+            .into_iter()
+            .collect()
     }
 
     pub fn start_matching_engine(&self) {
@@ -120,7 +125,7 @@ impl OrderBook {
                                     incoming.remaining -= trade_qty;
                                     best_ask.remaining -= trade_qty;
 
-                                    matched_guard.push(trade);
+                                    matched_guard.push_front(trade);
 
                                     if best_ask.remaining > 0 {
                                         asks_guard.push(Reverse(best_ask));
@@ -161,7 +166,7 @@ impl OrderBook {
                                     incoming.remaining -= trade_qty;
                                     best_bid.remaining -= trade_qty;
 
-                                    matched_guard.push(trade);
+                                    matched_guard.push_front(trade);
 
                                     if best_bid.remaining > 0 {
                                         bids_guard.push(best_bid);

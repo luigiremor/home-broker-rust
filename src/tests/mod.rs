@@ -243,12 +243,13 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
 
         let trades = orderbook.get_matched_orders();
+
         assert_eq!(trades.len(), 2);
 
-        assert_eq!(trades[0].quantity, 5);
-        assert_eq!(trades[0].price, 100);
+        assert_eq!(trades[1].quantity, 5);
+        assert_eq!(trades[1].price, 100);
 
-        assert_eq!(trades[1].quantity, 3);
-        assert_eq!(trades[1].price, 101);
+        assert_eq!(trades[0].quantity, 3);
+        assert_eq!(trades[0].price, 101);
     }
 }
