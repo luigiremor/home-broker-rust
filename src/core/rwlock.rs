@@ -48,9 +48,9 @@ impl<T> RWLock<T> {
             rw_lock: self,
             data_ptr: &lock_params_guard.data as *const T,
         }
-    } 
+    }
 
-    pub fn write_lock(&self)-> WriteGuard<T> {
+    pub fn write_lock(&self) -> WriteGuard<T> {
         let mut lock_params_guard = self.lock_params.lock().unwrap();
         lock_params_guard.writers_waiting += 1;
         while lock_params_guard.writer_working || lock_params_guard.num_readers > 0 {
@@ -68,14 +68,13 @@ impl<T> RWLock<T> {
     pub fn write_unlock(&self) {
         let mut lock_params_guard = self.lock_params.lock().unwrap();
         lock_params_guard.writer_working = false;
-        
+
         if lock_params_guard.writers_waiting > 0 {
             self.writers_condvar.notify_one();
         } else {
             self.readers_condvar.notify_all();
         }
     }
-
 }
 
 impl<'a, T> Drop for ReadGuard<'a, T> {
@@ -92,7 +91,7 @@ impl<'a, T> Drop for WriteGuard<'a, T> {
     fn drop(&mut self) {
         let mut lock_params_guard = self.rw_lock.lock_params.lock().unwrap();
         lock_params_guard.writer_working = false;
-        
+
         if lock_params_guard.writers_waiting > 0 {
             self.rw_lock.writers_condvar.notify_one();
         } else {

@@ -1,10 +1,10 @@
+use crate::core::rwlock::RWLock;
 use crossbeam::channel::{bounded, Receiver, Sender};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
-use crate::core::rwlock::RWLock;
 
 use super::errors::OrderError;
 use crate::models::{Order, Side, Trade};
@@ -61,12 +61,7 @@ impl OrderBook {
     }
 
     pub fn get_bids(&self) -> Vec<Order> {
-        let mut bids = self
-            .bids
-            .read_lock()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut bids = self.bids.read_lock().iter().cloned().collect::<Vec<_>>();
         bids.sort_by(|a, b| {
             b.price
                 .cmp(&a.price)
