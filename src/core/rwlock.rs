@@ -77,7 +77,7 @@ impl<T> RWLock<T> {
     }
 }
 
-impl<'a, T> Drop for ReadGuard<'a, T> {
+impl<T> Drop for ReadGuard<'_, T> {
     fn drop(&mut self) {
         let mut lock_params_guard = self.rw_lock.lock_params.lock().unwrap();
         lock_params_guard.num_readers -= 1;
@@ -87,7 +87,7 @@ impl<'a, T> Drop for ReadGuard<'a, T> {
     }
 }
 
-impl<'a, T> Drop for WriteGuard<'a, T> {
+impl<T> Drop for WriteGuard<'_, T> {
     fn drop(&mut self) {
         let mut lock_params_guard = self.rw_lock.lock_params.lock().unwrap();
         lock_params_guard.writer_working = false;
@@ -100,21 +100,21 @@ impl<'a, T> Drop for WriteGuard<'a, T> {
     }
 }
 
-impl<'a, T> std::ops::Deref for ReadGuard<'a, T> {
+impl<T> std::ops::Deref for ReadGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
         unsafe { &*self.data_ptr }
     }
 }
 
-impl<'a, T> std::ops::Deref for WriteGuard<'a, T> {
+impl<T> std::ops::Deref for WriteGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
         unsafe { &*self.data_ptr }
     }
 }
 
-impl<'a, T> std::ops::DerefMut for WriteGuard<'a, T> {
+impl<T> std::ops::DerefMut for WriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.data_ptr }
     }
