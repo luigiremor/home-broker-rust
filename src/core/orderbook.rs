@@ -1,20 +1,19 @@
-use crate::core::rwlock::RWLock;
+use super::errors::OrderError;
+use crate::models::{Order, Side, Trade};
+use crate::sync::mpsc::{self, SendError as CustomSendError, TryRecvError as CustomTryRecvError};
+use crate::sync::rwlock::RWLock;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SendError, SyncSender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use super::errors::OrderError;
-use crate::models::{Order, Side, Trade};
 
 pub struct OrderBook {
     asks: Arc<RWLock<BinaryHeap<Reverse<Order>>>>,
     bids: Arc<RWLock<BinaryHeap<Order>>>,
-    matched: Arc<Mutex<VecDeque<Trade>>>,
-    order_sender: SyncSender<Order>,
+    matched: Arc<std::sync::Mutex<VecDeque<Trade>>>,
+    order_sender: mpsc::Sender<Order>,
     shutdown_requested: Arc<AtomicBool>,
     matching_engine_handle: Option<JoinHandle<()>>,
 }
@@ -22,12 +21,11 @@ pub struct OrderBook {
 impl OrderBook {
     pub fn new() -> Self {
         const CHANNEL_CAPACITY: usize = 1000;
-        let (sender, receiver): (SyncSender<Order>, Receiver<Order>) =
-            sync_channel::<Order>(CHANNEL_CAPACITY);
+        let (sender, receiver) = mpsc::channel::<Order>(CHANNEL_CAPACITY);
 
         let asks = Arc::new(RWLock::new(BinaryHeap::<Reverse<Order>>::new()));
         let bids = Arc::new(RWLock::new(BinaryHeap::new()));
-        let matched = Arc::new(Mutex::new(VecDeque::new()));
+        let matched = Arc::new(std::sync::Mutex::new(VecDeque::new()));
         let shutdown_requested = Arc::new(AtomicBool::new(false));
 
         let asks_clone = Arc::clone(&asks);
@@ -38,7 +36,9 @@ impl OrderBook {
         let matching_engine_handle = std::thread::spawn(move || {
             loop {
                 if shutdown_requested_clone.load(Ordering::SeqCst) {
-                    println!("Matching engine: Shutdown signal received, terminating.");
+                    println!(
+                        "Matching engine: Shutdown signal received (OrderBook flag), terminating."
+                    );
                     break;
                 }
 
@@ -149,11 +149,13 @@ impl OrderBook {
                             }
                         }
                     },
-                    Err(TryRecvError::Empty) => {
+                    Err(CustomTryRecvError::Empty) => {
                         std::thread::sleep(Duration::from_millis(10));
                     }
-                    Err(TryRecvError::Disconnected) => {
-                        println!("Matching engine: Channel disconnected, terminating.");
+                    Err(CustomTryRecvError::Disconnected) => {
+                        println!(
+                            "Matching engine: Channel disconnected (custom mpsc), terminating."
+                        );
                         break;
                     }
                 }
@@ -181,8 +183,8 @@ impl OrderBook {
 
         self.order_sender
             .send(order)
-            .map_err(|e: SendError<Order>| {
-                eprintln!("Failed to send order: {}", e);
+            .map_err(|e: CustomSendError<Order>| {
+                eprintln!("Failed to send order via custom channel: {}", e.0.price);
                 OrderError::ChannelError
             })
     }
