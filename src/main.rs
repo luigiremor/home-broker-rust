@@ -10,8 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (mut orderbook_instance, order_receiver) = OrderBook::new();
-    orderbook_instance.start_matching_engine(order_receiver);
+    let orderbook_instance = OrderBook::new();
     let orderbook = Arc::new(orderbook_instance);
 
     let mut tui = Tui::new()?;
@@ -39,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         if Tui::should_quit()? {
-            println!("\nShutting down...");
+            println!("\nShutting down main loop...");
             running.store(false, Ordering::SeqCst);
             break;
         }
@@ -52,13 +51,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         thread::sleep(Duration::from_millis(100));
     }
 
+    println!("Shutting down TUI...");
     if let Err(e) = tui.shutdown() {
         eprintln!("Error during TUI shutdown: {}", e);
     }
-    running.store(false, Ordering::SeqCst);
+
+    println!("Waiting for order generator to complete...");
     if let Err(e) = generator_handle.join() {
         eprintln!("Order generator thread panicked: {:?}", e);
+    } else {
+        println!("Order generator completed.");
     }
 
+    println!("Main function finished. OrderBook will be dropped if this is the last Arc.");
     Ok(())
 }
