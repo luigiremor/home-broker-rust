@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn test_invalid_orders() {
-        let orderbook = OrderBook::new();
+        let (orderbook, _receiver) = OrderBook::new();
 
         let invalid_qty = create_order(Side::Buy, 10000, 0);
         assert!(matches!(
@@ -54,8 +54,9 @@ mod tests {
 
     #[test]
     fn test_order_matching_buy() {
-        let orderbook = Arc::new(OrderBook::new());
-        orderbook.start_matching_engine();
+        let (mut orderbook_instance, receiver) = OrderBook::new();
+        orderbook_instance.start_matching_engine(receiver);
+        let orderbook = Arc::new(orderbook_instance);
 
         let sell_order = create_order(Side::Sell, 10000, 50);
         orderbook.submit_order(sell_order.clone()).unwrap();
@@ -73,8 +74,9 @@ mod tests {
 
     #[test]
     fn test_order_matching_sell() {
-        let orderbook = Arc::new(OrderBook::new());
-        orderbook.start_matching_engine();
+        let (mut orderbook_instance, receiver) = OrderBook::new();
+        orderbook_instance.start_matching_engine(receiver);
+        let orderbook = Arc::new(orderbook_instance);
 
         let buy_order = create_order(Side::Buy, 10000, 50);
         orderbook.submit_order(buy_order.clone()).unwrap();
@@ -92,8 +94,9 @@ mod tests {
 
     #[test]
     fn test_order_book_sorting() {
-        let orderbook = Arc::new(OrderBook::new());
-        orderbook.start_matching_engine();
+        let (mut orderbook_instance, receiver) = OrderBook::new();
+        orderbook_instance.start_matching_engine(receiver);
+        let orderbook = Arc::new(orderbook_instance);
 
         let buy_orders: Vec<Order> = vec![
             create_order(Side::Buy, 10000, 50),
@@ -127,8 +130,9 @@ mod tests {
 
     #[test]
     fn test_price_time_priority() {
-        let orderbook = Arc::new(OrderBook::new());
-        orderbook.start_matching_engine();
+        let (mut orderbook_instance, receiver) = OrderBook::new();
+        orderbook_instance.start_matching_engine(receiver);
+        let orderbook = Arc::new(orderbook_instance);
 
         let order1 = create_order(Side::Buy, 10000, 50);
         thread::sleep(Duration::from_millis(10));
@@ -150,8 +154,9 @@ mod tests {
 
     #[test]
     fn test_no_match_conditions() {
-        let orderbook = Arc::new(OrderBook::new());
-        orderbook.start_matching_engine();
+        let (mut orderbook_instance, receiver) = OrderBook::new();
+        orderbook_instance.start_matching_engine(receiver);
+        let orderbook = Arc::new(orderbook_instance);
 
         let buy_order = create_order(Side::Buy, 10000, 50);
         let sell_order = create_order(Side::Sell, 10100, 50);
@@ -171,8 +176,9 @@ mod tests {
 
     #[test]
     fn test_shutdown() {
-        let orderbook = Arc::new(OrderBook::new());
-        orderbook.start_matching_engine();
+        let (mut orderbook_instance, receiver) = OrderBook::new();
+        orderbook_instance.start_matching_engine(receiver);
+        let orderbook = Arc::new(orderbook_instance);
 
         let order1 = create_order(Side::Buy, 10000, 50);
         orderbook.submit_order(order1).unwrap();
@@ -194,8 +200,9 @@ mod tests {
 
     #[test]
     fn test_partial_fill() {
-        let orderbook = Arc::new(OrderBook::new());
-        orderbook.start_matching_engine();
+        let (mut orderbook_instance, receiver) = OrderBook::new();
+        orderbook_instance.start_matching_engine(receiver);
+        let orderbook = Arc::new(orderbook_instance);
 
         let sell_order = create_order(Side::Sell, 100, 10);
         orderbook
@@ -220,8 +227,9 @@ mod tests {
 
     #[test]
     fn test_multiple_partial_fills() {
-        let orderbook = Arc::new(OrderBook::new());
-        orderbook.start_matching_engine();
+        let (mut orderbook_instance, receiver) = OrderBook::new();
+        orderbook_instance.start_matching_engine(receiver);
+        let orderbook = Arc::new(orderbook_instance);
 
         let sell_orders = vec![
             create_order(Side::Sell, 100, 5),
