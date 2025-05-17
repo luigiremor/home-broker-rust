@@ -1,3 +1,4 @@
+use crate::core::rwlock::RWLock;
 use crossbeam::channel::{bounded, Receiver, Sender};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
@@ -9,8 +10,8 @@ use super::errors::OrderError;
 use crate::models::{Order, Side, Trade};
 
 pub struct OrderBook {
-    asks: Arc<Mutex<BinaryHeap<Reverse<Order>>>>,
-    bids: Arc<Mutex<BinaryHeap<Order>>>,
+    asks: Arc<RWLock<BinaryHeap<Reverse<Order>>>>,
+    bids: Arc<RWLock<BinaryHeap<Order>>>,
     matched: Arc<Mutex<VecDeque<Trade>>>,
     order_sender: Sender<Order>,
     order_receiver: Receiver<Order>,
@@ -22,8 +23,8 @@ impl OrderBook {
         let (sender, receiver) = bounded(100);
         let (shutdown_sender, _) = broadcast::channel(1);
         OrderBook {
-            asks: Arc::new(Mutex::new(BinaryHeap::new())),
-            bids: Arc::new(Mutex::new(BinaryHeap::new())),
+            asks: Arc::new(RWLock::new(BinaryHeap::new())),
+            bids: Arc::new(RWLock::new(BinaryHeap::new())),
             matched: Arc::new(Mutex::new(VecDeque::new())),
             order_sender: sender,
             order_receiver: receiver,
@@ -47,8 +48,7 @@ impl OrderBook {
     pub fn get_asks(&self) -> Vec<Order> {
         let mut asks = self
             .asks
-            .lock()
-            .expect("Failed to lock asks")
+            .read_lock()
             .iter()
             .map(|rev| rev.0.clone())
             .collect::<Vec<_>>();
@@ -61,13 +61,7 @@ impl OrderBook {
     }
 
     pub fn get_bids(&self) -> Vec<Order> {
-        let mut bids = self
-            .bids
-            .lock()
-            .expect("Failed to lock bids")
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut bids = self.bids.read_lock().iter().cloned().collect::<Vec<_>>();
         bids.sort_by(|a, b| {
             b.price
                 .cmp(&a.price)
@@ -100,7 +94,7 @@ impl OrderBook {
             if let Ok(mut incoming) = receiver.recv_timeout(Duration::from_millis(100)) {
                 match incoming.side {
                     Side::Buy => {
-                        let mut asks_guard = asks.lock().expect("Failed to lock asks");
+                        let mut asks_guard = asks.write_lock();
                         let mut matched_guard = matched.lock().expect("Failed to lock matched");
 
                         while incoming.remaining > 0 {
@@ -136,12 +130,12 @@ impl OrderBook {
                         }
 
                         if incoming.remaining > 0 {
-                            let mut bids_guard = bids.lock().expect("Failed to lock bids");
+                            let mut bids_guard = bids.write_lock();
                             bids_guard.push(incoming);
                         }
                     }
                     Side::Sell => {
-                        let mut bids_guard = bids.lock().expect("Failed to lock bids");
+                        let mut bids_guard = bids.write_lock();
                         let mut matched_guard = matched.lock().expect("Failed to lock matched");
 
                         while incoming.remaining > 0 {
@@ -177,7 +171,7 @@ impl OrderBook {
                         }
 
                         if incoming.remaining > 0 {
-                            let mut asks_guard = asks.lock().expect("Failed to lock asks");
+                            let mut asks_guard = asks.write_lock();
                             asks_guard.push(Reverse(incoming));
                         }
                     }
