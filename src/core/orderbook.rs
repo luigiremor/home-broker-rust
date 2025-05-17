@@ -167,7 +167,12 @@ impl OrderBook {
             asks,
             bids,
             matched,
+            asks,
+            bids,
+            matched,
             order_sender: sender,
+            shutdown_requested,
+            matching_engine_handle: Some(matching_engine_handle),
             shutdown_requested,
             matching_engine_handle: Some(matching_engine_handle),
         }
@@ -215,6 +220,33 @@ impl OrderBook {
     }
 
     pub fn get_matched_orders(&self) -> Vec<Trade> {
+        match self.matched.lock() {
+            Ok(guard) => guard.clone().into_iter().collect(),
+            Err(poisoned) => {
+                eprintln!("Matched orders lock was poisoned. Recovering data.");
+                poisoned.into_inner().clone().into_iter().collect()
+            }
+        }
+    }
+}
+
+impl Drop for OrderBook {
+    fn drop(&mut self) {
+        println!("OrderBook: Drop called. Shutting down...");
+        self.shutdown_requested.store(true, Ordering::SeqCst);
+
+        if let Some(handle) = self.matching_engine_handle.take() {
+            println!("OrderBook: Waiting for matching engine thread to join...");
+            if handle.join().is_err() {
+                eprintln!("Matching engine thread panicked during drop.");
+            } else {
+                println!("Matching engine thread joined successfully during drop.");
+            }
+        } else {
+            println!(
+                "OrderBook: No matching engine handle to join (already joined or never started)."
+            );
+        }
         match self.matched.lock() {
             Ok(guard) => guard.clone().into_iter().collect(),
             Err(poisoned) => {
