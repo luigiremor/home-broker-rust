@@ -10,8 +10,8 @@ use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let orderbook = Arc::new(OrderBook::new());
-    orderbook.start_matching_engine();
+    let orderbook_instance = OrderBook::new();
+    let orderbook = Arc::new(orderbook_instance);
 
     let mut tui = Tui::new()?;
 
@@ -20,14 +20,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let orderbook_clone = Arc::clone(&orderbook);
     let pool = Arc::new(ThreadPool::new(4));
-    let pool_clone = Arc::clone(&pool);
 
     let generator_handle = thread::spawn(move || {
         while running_clone.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_secs(1));
+            thread::sleep(Duration::from_millis(200));
 
             let orderbook_job = Arc::clone(&orderbook_clone);
-            pool_clone.execute(move || {
+            pool.execute(move || {
                 let order = generate_random_order();
                 if let Err(e) = orderbook_job.submit_order(order) {
                     eprintln!("Failed to submit order: {}", e);
@@ -37,25 +36,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Order generator encerrado.");
     });
 
-    while running.load(Ordering::SeqCst) {
+    loop {
         if Tui::should_quit()? {
-            println!("\nShutting down...");
+            println!("\nShutting down main loop...");
+            running.store(false, Ordering::SeqCst);
             break;
         }
 
-        thread::sleep(Duration::from_millis(100));
         if let Err(e) = tui.draw(&orderbook) {
             eprintln!("Failed to draw TUI: {}", e);
+            running.store(false, Ordering::SeqCst);
             break;
         }
+        thread::sleep(Duration::from_millis(100));
     }
 
+    println!("Shutting down TUI...");
     if let Err(e) = tui.shutdown() {
         eprintln!("Error during TUI shutdown: {}", e);
     }
-    running.store(false, Ordering::SeqCst);
-    let _ = generator_handle.join();
-    let _ = orderbook.shutdown.send(());
 
+    println!("Waiting for order generator to complete...");
+    if let Err(e) = generator_handle.join() {
+        eprintln!("Order generator thread panicked: {:?}", e);
+    } else {
+        println!("Order generator completed.");
+    }
+
+    println!("Main function finished. OrderBook will be dropped if this is the last Arc.");
     Ok(())
 }
