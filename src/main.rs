@@ -1,7 +1,6 @@
-use broker::core::orderbook::OrderBook;
-use broker::core::threadpool::ThreadPool;
 use broker::ui::Tui;
 use broker::utils::generate_random_order;
+use broker::{core::orderbook::OrderBook, sync::threadpool::ThreadPool};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
