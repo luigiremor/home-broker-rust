@@ -198,9 +198,11 @@ impl OrderBook {
 impl Drop for OrderBook {
     fn drop(&mut self) {
         self.shutdown_requested.store(true, Ordering::SeqCst);
-        if self.order_sender.take().is_some() {}
+        self.order_sender.take();
         if let Some(handle) = self.matching_engine_handle.take() {
-            if handle.join().is_err() {}
+            if handle.join().is_err() {
+                println!("Matching engine thread panicked");
+            }
         }
     }
 }

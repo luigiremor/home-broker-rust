@@ -1,6 +1,5 @@
 use broker::core::orderbook::OrderBook;
 use broker::core::threadpool::ThreadPool;
-use broker::models::Order;
 use broker::ui::Tui;
 use broker::utils::generate_random_order;
 use std::sync::{
