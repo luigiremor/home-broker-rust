@@ -1,46 +1,49 @@
 use broker::core::orderbook::OrderBook;
+use broker::core::threadpool::ThreadPool;
 use broker::ui::Tui;
 use broker::utils::generate_random_order;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread;
 use std::time::Duration;
-use tokio::time;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orderbook = Arc::new(OrderBook::new());
     orderbook.start_matching_engine();
 
     let mut tui = Tui::new()?;
 
-    let orderbook_clone: Arc<OrderBook> = Arc::clone(&orderbook);
-    let mut shutdown_rx = orderbook.shutdown.subscribe();
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = Arc::clone(&running);
 
-    let order_generator = tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(1));
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    let order = generate_random_order();
-                    if let Err(e) = orderbook_clone.submit_order(order) {
-                        eprintln!("Failed to submit order: {}", e);
-                    }
+    let orderbook_clone = Arc::clone(&orderbook);
+    let pool = Arc::new(ThreadPool::new(4));
+    let pool_clone = Arc::clone(&pool);
+
+    let generator_handle = thread::spawn(move || {
+        while running_clone.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_secs(1));
+
+            let orderbook_job = Arc::clone(&orderbook_clone);
+            pool_clone.execute(move || {
+                let order = generate_random_order();
+                if let Err(e) = orderbook_job.submit_order(order) {
+                    eprintln!("Failed to submit order: {}", e);
                 }
-                _ = shutdown_rx.recv() => {
-                    break;
-                }
-            }
+            });
         }
+        println!("Order generator encerrado.");
     });
 
-    let mut interval = time::interval(Duration::from_millis(100));
-
-    loop {
+    while running.load(Ordering::SeqCst) {
         if Tui::should_quit()? {
             println!("\nShutting down...");
             break;
         }
 
-        interval.tick().await;
+        thread::sleep(Duration::from_millis(100));
         if let Err(e) = tui.draw(&orderbook) {
             eprintln!("Failed to draw TUI: {}", e);
             break;
@@ -50,9 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = tui.shutdown() {
         eprintln!("Error during TUI shutdown: {}", e);
     }
-
+    running.store(false, Ordering::SeqCst);
+    let _ = generator_handle.join();
     let _ = orderbook.shutdown.send(());
-    let _ = order_generator.await;
 
     Ok(())
 }
