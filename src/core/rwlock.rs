@@ -37,7 +37,7 @@ impl<T> RWLock<T> {
         }
     }
 
-    pub fn read_lock(&self) -> ReadGuard<T> {
+    pub fn read_lock(&self) -> ReadGuard<'_, T> {
         let mut lock_params_guard = self.lock_params.lock().unwrap();
         while lock_params_guard.writer_working || lock_params_guard.writers_waiting > 0 {
             lock_params_guard = self.readers_condvar.wait(lock_params_guard).unwrap();
@@ -50,7 +50,7 @@ impl<T> RWLock<T> {
         }
     }
 
-    pub fn write_lock(&self) -> WriteGuard<T> {
+    pub fn write_lock(&self) -> WriteGuard<'_, T> {
         let mut lock_params_guard = self.lock_params.lock().unwrap();
         lock_params_guard.writers_waiting += 1;
         while lock_params_guard.writer_working || lock_params_guard.num_readers > 0 {

@@ -66,7 +66,7 @@ impl Drop for ThreadPool {
     fn drop(&mut self) {
         drop(std::mem::replace(&mut self.sender, mpsc::channel().0));
         for worker in &mut self.workers {
-            //println!("Shutting down worker {}", worker.id);
+            println!("Shutting down worker {}", worker.id);
             if let Some(handle) = worker.handle.take() {
                 handle.join().unwrap();
             }
