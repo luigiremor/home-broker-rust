@@ -81,3 +81,9 @@ Para executar este projeto, você precisará de:
   - `threadpool.rs`: Implementação de um pool de threads.
 - `Dockerfile`: Instruções para construir a imagem Docker.
 - `Cargo.toml`: Manifesto do projeto que define dependências e metadados.
+
+## Participantes:
+
+- Luigi Remor Costa (23203395)
+- Lucas Nunes Bossle (23100751)
+- Gustavo Luiz Kohler (23102480)
