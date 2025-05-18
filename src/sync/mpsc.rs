@@ -3,18 +3,16 @@ use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-// Shared core of the channel
 pub(crate) struct ChannelCore<T> {
     queue: Mutex<VecDeque<T>>,
     capacity: usize,
     senders_count: AtomicUsize,
-    is_empty_cond: Condvar, // Signals that an item has been added (queue is not empty)
-    is_not_full_cond: Condvar, // Signals that an item has been removed (queue is not full)
+    is_empty_cond: Condvar,
+    is_not_full_cond: Condvar,
 }
 
-// Error returned by send if the channel is disconnected or operation fails
 #[derive(Debug)]
-pub struct SendError<T>(pub T); // Item is returned if send fails
+pub struct SendError<T>(pub T);
 
 impl<T> fmt::Display for SendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -24,7 +22,6 @@ impl<T> fmt::Display for SendError<T> {
 
 impl<T: fmt::Debug> std::error::Error for SendError<T> {}
 
-// Error returned by try_recv
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TryRecvError {
     Empty,
@@ -42,7 +39,6 @@ impl fmt::Display for TryRecvError {
 
 impl std::error::Error for TryRecvError {}
 
-// Error returned by recv
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RecvError {
     Disconnected,
@@ -56,7 +52,6 @@ impl fmt::Display for RecvError {
 
 impl std::error::Error for RecvError {}
 
-// Sender part of the channel
 pub struct Sender<T> {
     core: Arc<ChannelCore<T>>,
 }
@@ -67,27 +62,24 @@ impl<T> Sender<T> {
             Ok(guard) => guard,
             Err(poisoned_err) => {
                 eprintln!("CustomMPSC Send: Queue lock poisoned: {:?}", poisoned_err);
-                return Err(SendError(item)); // item is returned here
+                return Err(SendError(item));
             }
         };
 
         while queue_guard.len() >= self.core.capacity {
             if self.core.senders_count.load(Ordering::Relaxed) == 0 {
-                return Err(SendError(item)); // item is returned here
+                return Err(SendError(item));
             }
 
-            // If wait fails, the item is NOT consumed yet by push_back.
-            // So, we can still return it in SendError.
             match self.core.is_not_full_cond.wait(queue_guard) {
                 Ok(guard) => queue_guard = guard,
                 Err(poisoned_err) => {
                     eprintln!("CustomMPSC Send: Condvar wait poisoned: {:?}", poisoned_err);
-                    return Err(SendError(item)); // item is returned here
+                    return Err(SendError(item));
                 }
             }
         }
 
-        // Item is moved here.
         queue_guard.push_back(item);
         drop(queue_guard);
         self.core.is_empty_cond.notify_one();
@@ -107,20 +99,14 @@ impl<T> Clone for Sender<T> {
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         if self.core.senders_count.fetch_sub(1, Ordering::Relaxed) == 1 {
-            // This was the last sender, notify the receiver in case it's waiting
             self.core.is_empty_cond.notify_one();
-            // Also notify any senders that might be blocked on a full queue,
-            // so they can see it's now disconnected.
             self.core.is_not_full_cond.notify_all();
         }
     }
 }
 
-// Receiver part of the channel
 pub struct Receiver<T> {
     core: Arc<ChannelCore<T>>,
-    // We can add a flag here to indicate if this receiver is the "active" one,
-    // though for single consumer it's implicit.
 }
 
 impl<T> Receiver<T> {
@@ -129,18 +115,16 @@ impl<T> Receiver<T> {
             .core
             .queue
             .lock()
-            .map_err(|_| RecvError::Disconnected)?; // Handle poisoned mutex
+            .map_err(|_| RecvError::Disconnected)?;
         loop {
             if let Some(item) = queue_guard.pop_front() {
                 drop(queue_guard);
                 self.core.is_not_full_cond.notify_one();
                 return Ok(item);
             }
-            // If queue is empty, check if senders are still active
             if self.core.senders_count.load(Ordering::Relaxed) == 0 {
                 return Err(RecvError::Disconnected);
             }
-            // Wait for an item to be pushed or for senders to disconnect
             queue_guard = self
                 .core
                 .is_empty_cond
@@ -154,7 +138,7 @@ impl<T> Receiver<T> {
             .core
             .queue
             .lock()
-            .map_err(|_| TryRecvError::Disconnected)?; // Handle poisoned mutex
+            .map_err(|_| TryRecvError::Disconnected)?;
         if let Some(item) = queue_guard.pop_front() {
             drop(queue_guard);
             self.core.is_not_full_cond.notify_one();
@@ -167,13 +151,12 @@ impl<T> Receiver<T> {
     }
 }
 
-// Function to create a new channel
 pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     assert!(capacity > 0, "Channel capacity must be greater than 0");
     let core = Arc::new(ChannelCore {
         queue: Mutex::new(VecDeque::with_capacity(capacity)),
         capacity,
-        senders_count: AtomicUsize::new(1), // Start with one sender
+        senders_count: AtomicUsize::new(1),
         is_empty_cond: Condvar::new(),
         is_not_full_cond: Condvar::new(),
     });

@@ -19,6 +19,81 @@ pub struct OrderBook {
 }
 
 impl OrderBook {
+    #[allow(clippy::too_many_arguments)]
+    fn process_order_matches<O: Ord + Clone>(
+        incoming_order: &mut Order,
+        opposing_book_heap: &mut BinaryHeap<O>,
+        matched_orders_queue: &mut VecDeque<Trade>,
+        price_condition_met: impl Fn(&O, &Order) -> bool,
+        get_opposing_order_data_mut: impl Fn(&mut O) -> &mut Order,
+        get_cloned_opposing_order_data: impl Fn(&O) -> Order,
+    ) {
+        while incoming_order.remaining > 0 {
+            if let Some(opposing_order_in_heap_peek) = opposing_book_heap.peek() {
+                if price_condition_met(opposing_order_in_heap_peek, incoming_order) {
+                    if let Some(mut best_opposing_order_heap_item) = opposing_book_heap.pop() {
+                        let resting_order_for_trade =
+                            get_cloned_opposing_order_data(&best_opposing_order_heap_item);
+
+                        let best_opposing_order_data_mut =
+                            get_opposing_order_data_mut(&mut best_opposing_order_heap_item);
+
+                        let trade_qty = incoming_order
+                            .remaining
+                            .min(best_opposing_order_data_mut.remaining);
+
+                        let (buy_trade_order, sell_trade_order, trade_price) =
+                            if incoming_order.side == Side::Buy {
+                                (
+                                    incoming_order.clone(),
+                                    resting_order_for_trade.clone(),
+                                    resting_order_for_trade.price,
+                                )
+                            } else {
+                                (
+                                    resting_order_for_trade.clone(),
+                                    incoming_order.clone(),
+                                    resting_order_for_trade.price,
+                                )
+                            };
+
+                        let trade = Trade {
+                            price: trade_price,
+                            quantity: trade_qty,
+                            buy_order: buy_trade_order,
+                            sell_order: sell_trade_order,
+                            timestamp: SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map(|d| d.as_millis())
+                                .unwrap_or_else(|err| {
+                                    eprintln!(
+                                        "SystemTime error: {:?}, defaulting timestamp to 0.",
+                                        err
+                                    );
+                                    0
+                                }),
+                        };
+
+                        incoming_order.remaining -= trade_qty;
+                        best_opposing_order_data_mut.remaining -= trade_qty;
+
+                        matched_orders_queue.push_front(trade);
+
+                        if best_opposing_order_data_mut.remaining > 0 {
+                            opposing_book_heap.push(best_opposing_order_heap_item);
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     pub fn new() -> Self {
         const CHANNEL_CAPACITY: usize = 1000;
         let (sender, receiver) = mpsc::channel::<Order>(CHANNEL_CAPACITY);
@@ -43,112 +118,49 @@ impl OrderBook {
                 }
 
                 match receiver.try_recv() {
-                    Ok(mut incoming) => match incoming.side {
-                        Side::Buy => {
-                            let mut asks_guard = asks_clone.write_lock();
-                            let mut matched_guard = match matched_clone.lock() {
-                                Ok(guard) => guard,
-                                Err(poisoned) => poisoned.into_inner(),
-                            };
+                    Ok(mut incoming_order) => {
+                        let mut matched_guard = match matched_clone.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
 
-                            while incoming.remaining > 0 {
-                                if let Some(Reverse(ask_peek)) = asks_guard.peek() {
-                                    if ask_peek.price <= incoming.price {
-                                        if let Some(Reverse(mut best_ask)) = asks_guard.pop() {
-                                            let trade_qty =
-                                                incoming.remaining.min(best_ask.remaining);
-
-                                            let trade = Trade {
-                                                price: best_ask.price,
-                                                quantity: trade_qty,
-                                                buy_order: incoming.clone(),
-                                                sell_order: best_ask.clone(),
-                                                timestamp: SystemTime::now()
-                                                    .duration_since(UNIX_EPOCH)
-                                                    .map(|d| d.as_millis())
-                                                    .unwrap_or_else(|err| {
-                                                        eprintln!("SystemTime error: {:?}", err);
-                                                        0
-                                                    }),
-                                            };
-
-                                            incoming.remaining -= trade_qty;
-                                            best_ask.remaining -= trade_qty;
-
-                                            matched_guard.push_front(trade);
-
-                                            if best_ask.remaining > 0 {
-                                                asks_guard.push(Reverse(best_ask));
-                                            }
-                                        } else {
-                                            break;
-                                        }
-                                    } else {
-                                        break;
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-
-                            if incoming.remaining > 0 {
-                                let mut bids_guard = bids_clone.write_lock();
-                                bids_guard.push(incoming);
-                            }
-                        }
-                        Side::Sell => {
-                            let mut bids_guard = bids_clone.write_lock();
-                            let mut matched_guard = match matched_clone.lock() {
-                                Ok(guard) => guard,
-                                Err(poisoned) => poisoned.into_inner(),
-                            };
-
-                            while incoming.remaining > 0 {
-                                if let Some(bid_peek) = bids_guard.peek() {
-                                    if bid_peek.price >= incoming.price {
-                                        if let Some(mut best_bid) = bids_guard.pop() {
-                                            let trade_qty =
-                                                incoming.remaining.min(best_bid.remaining);
-
-                                            let trade = Trade {
-                                                price: best_bid.price,
-                                                quantity: trade_qty,
-                                                buy_order: best_bid.clone(),
-                                                sell_order: incoming.clone(),
-                                                timestamp: SystemTime::now()
-                                                    .duration_since(UNIX_EPOCH)
-                                                    .map(|d| d.as_millis())
-                                                    .unwrap_or_else(|err| {
-                                                        eprintln!("SystemTime error: {:?}", err);
-                                                        0
-                                                    }),
-                                            };
-
-                                            incoming.remaining -= trade_qty;
-                                            best_bid.remaining -= trade_qty;
-
-                                            matched_guard.push_front(trade);
-
-                                            if best_bid.remaining > 0 {
-                                                bids_guard.push(best_bid);
-                                            }
-                                        } else {
-                                            break;
-                                        }
-                                    } else {
-                                        break;
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-
-                            if incoming.remaining > 0 {
+                        match incoming_order.side {
+                            Side::Buy => {
                                 let mut asks_guard = asks_clone.write_lock();
-                                asks_guard.push(Reverse(incoming));
+                                Self::process_order_matches(
+                                    &mut incoming_order,
+                                    &mut asks_guard,
+                                    &mut matched_guard,
+                                    |ask_rev: &Reverse<Order>, buy_ord: &Order| {
+                                        ask_rev.0.price <= buy_ord.price
+                                    },
+                                    |ask_rev: &mut Reverse<Order>| &mut ask_rev.0,
+                                    |ask_rev: &Reverse<Order>| ask_rev.0.clone(),
+                                );
+
+                                if incoming_order.remaining > 0 {
+                                    let mut bids_guard = bids_clone.write_lock();
+                                    bids_guard.push(incoming_order);
+                                }
+                            }
+                            Side::Sell => {
+                                let mut bids_guard = bids_clone.write_lock();
+                                Self::process_order_matches(
+                                    &mut incoming_order,
+                                    &mut bids_guard,
+                                    &mut matched_guard,
+                                    |bid: &Order, sell_ord: &Order| bid.price >= sell_ord.price,
+                                    |bid: &mut Order| bid,
+                                    |bid: &Order| bid.clone(),
+                                );
+
+                                if incoming_order.remaining > 0 {
+                                    let mut asks_guard = asks_clone.write_lock();
+                                    asks_guard.push(Reverse(incoming_order));
+                                }
                             }
                         }
-                    },
+                    }
                     Err(CustomTryRecvError::Empty) => {
                         std::thread::sleep(Duration::from_millis(10));
                     }
