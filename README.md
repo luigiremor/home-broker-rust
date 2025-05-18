@@ -19,7 +19,7 @@ Este projeto é uma simulação de um Home Broker (plataforma de negociação on
 
 ## Pré-requisitos
 
-Para executar este projeto, você precisará de:
+Para executar este projeto, você precisará instalar o Rust ou o Docker:
 
 - **Rust**: Para compilar e executar o projeto localmente. (Instale em [rust-lang.org](https://www.rust-lang.org/tools/install))
 
