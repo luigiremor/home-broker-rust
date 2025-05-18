@@ -22,6 +22,13 @@ Este projeto é uma simulação de um Home Broker (plataforma de negociação on
 Para executar este projeto, você precisará de:
 
 - **Rust**: Para compilar e executar o projeto localmente. (Instale em [rust-lang.org](https://www.rust-lang.org/tools/install))
+
+  - Instale o Rust:
+
+  ```bash
+    curl https://sh.rustup.rs -sSf | sh
+  ```
+
 - **Docker**: Para construir e executar o projeto em um contêiner. (Instale em [docker.com](https://www.docker.com/get-started))
 
 ## Como Executar
@@ -68,5 +75,9 @@ Para executar este projeto, você precisará de:
 - `src/utils/`:
   - `random.rs`: Utilitário para gerar ordens aleatórias.
   - `sync/`: Primitivas de sincronização personalizadas (se houver, com base nas importações).
+- `src/sync/`:
+  - `mpsc.rs`: Implementação de um canal de mensagens concorrente.
+  - `rwlock.rs`: Implementação de um lock de leitura/escrita.
+  - `threadpool.rs`: Implementação de um pool de threads.
 - `Dockerfile`: Instruções para construir a imagem Docker.
 - `Cargo.toml`: Manifesto do projeto que define dependências e metadados.
