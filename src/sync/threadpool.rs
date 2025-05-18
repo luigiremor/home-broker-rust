@@ -1,5 +1,7 @@
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
+
+use crate::sync::mpsc;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -12,7 +14,7 @@ impl ThreadPool {
     pub fn new(size: usize) -> Self {
         assert!(size > 0);
 
-        let (sender, receiver) = mpsc::channel::<Job>();
+        let (sender, receiver) = mpsc::channel::<Job>(100);
         let receiver = Arc::new(Mutex::new(receiver));
 
         let mut workers = Vec::with_capacity(size);
@@ -28,7 +30,9 @@ impl ThreadPool {
         F: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
-        self.sender.send(job).expect("ThreadPool has shut down");
+        if self.sender.send(job).is_err() {
+            panic!("ThreadPool has shut down, failed to send job.");
+        }
     }
 }
 
@@ -41,8 +45,17 @@ impl Worker {
     fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Self {
         let handle = thread::spawn(move || loop {
             let message = {
-                let lock = receiver.lock().unwrap();
-                lock.recv()
+                let guard = match receiver.lock() {
+                    Ok(g) => g,
+                    Err(poisoned) => {
+                        eprintln!(
+                            "Worker {}: Mutex poisoned, shutting down. Error: {}",
+                            id, poisoned
+                        );
+                        break;
+                    }
+                };
+                guard.recv()
             };
 
             match message {
@@ -64,11 +77,13 @@ impl Worker {
 
 impl Drop for ThreadPool {
     fn drop(&mut self) {
-        drop(std::mem::replace(&mut self.sender, mpsc::channel().0));
+        drop(std::mem::replace(&mut self.sender, mpsc::channel(1).0));
         for worker in &mut self.workers {
             println!("Shutting down worker {}", worker.id);
             if let Some(handle) = worker.handle.take() {
-                handle.join().unwrap();
+                if let Err(e) = handle.join() {
+                    eprintln!("Worker thread {} panicked: {:?}", worker.id, e);
+                }
             }
         }
     }
